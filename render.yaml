@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: tg-client
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: TG_API_ID
+        sync: false
+      - key: TG_API_HASH
+        sync: false
+      - key: TG_SESSION
+        sync: false
