@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Мой Telegram</title>
+<style>
+  :root {
+    --bg: #0e1621; --panel: #17212b; --accent: #2b5278; --text: #e8ecf0;
+    --muted: #7c8a97; --bubble-out: #2b5278; --bubble-in: #1e2731;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, system-ui, sans-serif;
+    display: flex; flex-direction: column; height: 100%;
+  }
+  #login {
+    flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 14px; padding: 24px;
+  }
+  #login input {
+    width: 260px; padding: 12px; border-radius: 8px; border: 1px solid #2f3b47; background: #0e1621; color: var(--text); font-size: 16px;
+  }
+  #login button, .send-btn {
+    padding: 12px 20px; border-radius: 8px; border: none; background: var(--accent); color: white; font-size: 16px;
+  }
+  #login p { color: var(--muted); max-width: 280px; text-align: center; font-size: 14px; }
+  #app { display: none; flex: 1; overflow: hidden; }
+  #app.active { display: flex; }
+  #dialogs { width: 100%; max-width: 320px; overflow-y: auto; border-right: 1px solid #223; background: var(--panel); }
+  .dialog-item { padding: 12px 16px; border-bottom: 1px solid #1c2733; cursor: pointer; }
+  .dialog-item:active { background: #1c2733; }
+  .dialog-item .name { font-weight: 600; }
+  .dialog-item .preview { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #chat { flex: 1; display: none; flex-direction: column; }
+  #chat.active { display: flex; }
+  #chat-header { padding: 12px 16px; background: var(--panel); border-bottom: 1px solid #223; display:flex; align-items:center; gap:10px; }
+  #back-btn { background:none; border:none; color: var(--text); font-size: 20px; }
+  #messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 78%; padding: 8px 12px; border-radius: 12px; font-size: 15px; line-height: 1.35; }
+  .msg.in { background: var(--bubble-in); align-self: flex-start; }
+  .msg.out { background: var(--bubble-out); align-self: flex-end; }
+  .msg img { max-width: 100%; border-radius: 8px; display: block; margin-top: 4px; }
+  #composer { display: flex; gap: 8px; padding: 10px; background: var(--panel); border-top: 1px solid #223; }
+  #composer input[type=text] { flex: 1; padding: 10px 14px; border-radius: 20px; border: none; background: #0e1621; color: var(--text); font-size: 15px; }
+  #composer button { border: none; background: var(--accent); color: white; border-radius: 20px; padding: 0 16px; font-size: 20px; }
+  #file-btn { background: none; color: var(--muted); font-size: 22px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h2>Вход в Telegram</h2>
+  <p id="login-hint">Подключаемся…</p>
+  <input id="phone-input" type="tel" placeholder="+7 999 123-45-67" class="hidden" />
+  <input id="code-input" type="text" inputmode="numeric" placeholder="Код из Telegram" class="hidden" />
+  <input id="password-input" type="password" placeholder="Пароль (2FA), если есть" class="hidden" />
+  <button id="login-btn" class="hidden">Продолжить</button>
+</div>
+
+<div id="app">
+  <div id="dialogs"></div>
+  <div id="chat">
+    <div id="chat-header">
+      <button id="back-btn">←</button>
+      <div id="chat-title">Чат</div>
+    </div>
+    <div id="messages"></div>
+    <div id="composer">
+      <button id="file-btn">📎</button>
+      <input id="file-input" type="file" class="hidden" />
+      <input id="text-input" type="text" placeholder="Сообщение…" />
+      <button id="send-btn">➤</button>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+let currentStep = null;
+let currentChatId = null;
+
+const loginHint = document.getElementById('login-hint');
+const phoneInput = document.getElementById('phone-input');
+const codeInput = document.getElementById('code-input');
+const passwordInput = document.getElementById('password-input');
+const loginBtn = document.getElementById('login-btn');
+
+function showStep(step) {
+  currentStep = step;
+  phoneInput.classList.add('hidden');
+  codeInput.classList.add('hidden');
+  passwordInput.classList.add('hidden');
+  loginBtn.classList.remove('hidden');
+  if (step === 'phone') { loginHint.textContent = 'Введи номер телефона'; phoneInput.classList.remove('hidden'); phoneInput.focus(); }
+  if (step === 'code') { loginHint.textContent = 'Введи код, который пришёл в Telegram'; codeInput.classList.remove('hidden'); codeInput.focus(); }
+  if (step === 'password') { loginHint.textContent = 'Введи пароль двухфакторной аутентификации'; passwordInput.classList.remove('hidden'); passwordInput.focus(); }
+}
+
+loginBtn.addEventListener('click', async () => {
+  let value = '';
+  if (currentStep === 'phone') value = phoneInput.value.trim();
+  if (currentStep === 'code') value = codeInput.value.trim();
+  if (currentStep === 'password') value = passwordInput.value;
+  if (!value) return;
+  loginHint.textContent = 'Проверяем…';
+  loginBtn.classList.add('hidden');
+  await fetch('/api/login/submit', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ step: currentStep, value })
+  });
+});
+
+socket.on('login-step', (data) => showStep(data.step));
+socket.on('login-error', (data) => { loginHint.textContent = 'Ошибка: ' + data.error; loginBtn.classList.remove('hidden'); });
+socket.on('login-done', () => { document.getElementById('login').style.display = 'none'; startApp(); });
+
+async function checkStatus() {
+  const r = await fetch('/api/status');
+  const data = await r.json();
+  if (data.ready) {
+    document.getElementById('login').style.display = 'none';
+    startApp();
+  } else {
+    loginHint.textContent = 'Нажми, чтобы начать вход';
+    loginBtn.textContent = 'Войти';
+    loginBtn.classList.remove('hidden');
+    loginBtn.onclick = async () => {
+      loginBtn.classList.add('hidden');
+      await fetch('/api/login/start', { method: 'POST' });
+    };
+  }
+}
+
+// ---------------- APP ----------------
+
+const app = document.getElementById('app');
+const dialogsEl = document.getElementById('dialogs');
+const chatEl = document.getElementById('chat');
+const messagesEl = document.getElementById('messages');
+const chatTitle = document.getElementById('chat-title');
+
+async function startApp() {
+  app.classList.add('active');
+  loadDialogs();
+  // повторно назначаем обработчик логин-кнопки, чтобы не мешал дальше
+  loginBtn.onclick = null;
+}
+
+async function loadDialogs() {
+  const r = await fetch('/api/dialogs');
+  const dialogs = await r.json();
+  dialogsEl.innerHTML = '';
+  dialogs.forEach((d) => {
+    const el = document.createElement('div');
+    el.className = 'dialog-item';
+    el.innerHTML = `<div class="name">${escapeHtml(d.name)}</div><div class="preview">${escapeHtml(d.lastMessage || '')}</div>`;
+    el.addEventListener('click', () => openChat(d.id, d.name));
+    dialogsEl.appendChild(el);
+  });
+}
+
+async function openChat(chatId, name) {
+  currentChatId = chatId;
+  chatTitle.textContent = name;
+  chatEl.classList.add('active');
+  if (window.innerWidth < 700) dialogsEl.style.display = 'none';
+  messagesEl.innerHTML = '';
+  const r = await fetch('/api/messages/' + encodeURIComponent(chatId));
+  const msgs = await r.json();
+  msgs.forEach(renderMessage);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+document.getElementById('back-btn').addEventListener('click', () => {
+  chatEl.classList.remove('active');
+  dialogsEl.style.display = '';
+  currentChatId = null;
+});
+
+function renderMessage(m) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + (m.out ? 'out' : 'in');
+  let html = escapeHtml(m.text || '');
+  if (m.mediaType === 'photo') {
+    html += `<img loading="lazy" src="/api/media/${encodeURIComponent(m.chatId)}/${m.id}" />`;
+  } else if (m.mediaType === 'document') {
+    html += '<div style="opacity:.7;font-size:13px;margin-top:4px;">📎 файл</div>';
+  }
+  el.innerHTML = html || '&nbsp;';
+  messagesEl.appendChild(el);
+}
+
+socket.on('message', (m) => {
+  if (m.chatId === currentChatId) {
+    renderMessage(m);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+  loadDialogs();
+});
+
+document.getElementById('send-btn').addEventListener('click', sendCurrent);
+document.getElementById('text-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sendCurrent();
+});
+
+async function sendCurrent() {
+  const input = document.getElementById('text-input');
+  const fileInput = document.getElementById('file-input');
+  if (!currentChatId) return;
+  const text = input.value.trim();
+  const file = fileInput.files[0];
+  if (!text && !file) return;
+  const form = new FormData();
+  form.append('chatId', currentChatId);
+  form.append('text', text);
+  if (file) form.append('file', file);
+  input.value = '';
+  fileInput.value = '';
+  await fetch('/api/send', { method: 'POST', body: form });
+}
+
+document.getElementById('file-btn').addEventListener('click', () => {
+  document.getElementById('file-input').click();
+});
+document.getElementById('file-input').addEventListener('change', () => {
+  if (document.getElementById('file-input').files[0]) sendCurrent();
+});
+
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+checkStatus();
+</script>
+</body>
+</html>
